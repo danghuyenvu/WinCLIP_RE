@@ -1,30 +1,16 @@
 import torch
-import random
-import glob
-import os
-from random import sample
-from tqdm import tqdm
-from sklearn.metrics import roc_auc_score, precision_recall_curve, auc, f1_score
-import numpy as np
+import open_clip
 
-from PIL import Image
-from torch.utils.data import DataLoader, Dataset
-import matplotlib.pyplot as plt
-import matplotlib
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
-from torchvision import transforms
 
-import open_clip
+import cv2
 
 #constants parameters
-MEAN = (0.48145466, 0.4578275, 0.40821073)
-STD = (0.26862954, 0.26130258, 0.27577711)
 MODEL_NAME = "ViT-B-16-plus-240"
 PRETRAINED = "laion400m_e32"
 RE_SIZE = 240
-DS_NAME = "mvtec-ad"
 DEVICE = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
 
 #setup states and template text for compositional promt ensemble
@@ -57,162 +43,8 @@ template_level = [
 	"a photo of a {} for anomaly detection.",
 	"a photo of the {} for anomaly detection."
 ]
-VISA_OBJ = [
-	"candle",
-	"capsules",
-	"cashew",
-	"chewinggum",
-	"fryum",
-	"macaroni1",
-	"macaroni2",
-	"pcb1",
-	"pcb2",
-	"pcb3",
-	"pcb4",
-	"pipe_fryum",
-	'all'
-]	
-MVTEC_AD_OBJ = [
-	"bottle",
-	"cable",
-	"capsule",
-	"carpet",
-	"grid",
-	"hazelnut",
-	"leather",
-	"metal_nut",
-	"pill",
-	"screw",
-	"tile",
-	"toothbrush",
-	"transistor",
-	"wood",
-	"zipper"
-]
-
-OBJECT_TYPE = VISA_OBJ if DS_NAME == "visa" else MVTEC_AD_OBJ
 
 DS_DIR = "../Datasets/MVtecAD"
-
-class ADDataset(Dataset):
-	def __init__(self, obj_type, data_dir, spatial_size=240, mode="train", shot=0, preprocess=None):
-		super(ADDataset, self).__init__()
-		self.shot = shot
-		self.object_type = obj_type
-		self.data_dir = data_dir
-		self.spatial_size = spatial_size
-		self.mode = mode
-		self.preprocess = preprocess
-		self.pre_transform = transforms.Compose([
-			transforms.Resize(size=240, interpolation=transforms.InterpolationMode.BICUBIC),
-			transforms.CenterCrop(size=(240, 240)),
-			transforms.Lambda(self.convert_rgb),
-			transforms.ToTensor(),
-			transforms.Normalize(mean=MEAN, std=STD)
-			])
-		if self.preprocess is not None:
-			self.preprocess.transforms[0] = transforms.Resize(
-				size=(240, 240),
-				interpolation=transforms.InterpolationMode.BICUBIC,
-				max_size=None, antialias=None
-			)
-			self.preprocess.transforms[1] = transforms.CenterCrop(size=(240, 240))
-		self.init_dataset()
-
-	def init_dataset(self):
-		self.img_path = []
-		if self.object_type == "all":
-			#get all images path of all objects
-			for x in OBJECT_TYPE:
-				cur_obj = os.path.join(self.data_dir, x)
-				cur_obj = os.path.join(cur_obj, "test")
-				self.img_path.extend(glob.glob(os.path.join(cur_obj, "**", "*.*")))
-			self.img_path = sorted(self.img_path)
-			return
-
-		type_dir = os.path.join(self.data_dir, self.object_type)
-		test_dir = os.path.join(type_dir, "test")
-
-		#get all images paths in test folder
-		self.img_path.extend(glob.glob(os.path.join(test_dir, "**", "*.*")))
-
-	def convert_rgb(self, x):
-		return x.convert('RGB')
-
-	def __getitem__(self, indice):
-		ref_list = []
-		img = None
-		if self.shot != 0:
-			normal_image = []
-			# get shot number of normal images for reference
-			if self.object_type == "all":
-				raise ValueError("Only all for Zero shot")
-
-			train_dir = os.path.join(self.data_dir, self.object_type, "train", "good")
-			normal_image.extend(glob.glob(os.path.join(train_dir, "*.*")))
-			normal_image = np.random.RandomState(10).choice(normal_image, self.shot)
-			for x in normal_image:
-				if self.preprocess is not None:
-					ref_list.append(self.transform_image(x, self.preprocess))
-				else:
-					ref_list.append(self.transform_image(x, self.pre_transform))
-
-		if indice >= len(self.img_path):
-			raise ValueError("Invalid indice")
-		image_path = self.img_path[indice]
-		folder_path, image = os.path.split(image_path)
-		isAbno = np.array([1], dtype=np.float32)
-		if os.path.basename(folder_path) == "good":
-			isAbno = np.array([0], dtype=np.float32)
-		img = self.transform_image(image_path, self.preprocess) if self.preprocess is not None else self.transform_image(image_path, self.pre_transform)
-
-		return ref_list, img, isAbno, indice, image_path
-
-	def __len__(self):
-		return len(self.img_path)
-
-	def transform_image(self, image, preprocess=None):
-		"""
-		do pretransform for image
-		"""
-		image = Image.open(image)
-		height, width = image.size
-		if height == width:
-			processed = preprocess(image)
-			return processed
-		else:
-			cropped_image = self.crop_image(image)
-			processed = []
-			for i in cropped_image:
-				processed.append(preprocess(i))
-			return processed
-
-	def crop_image(self, image, stride_ratio=0.8):
-		"""
-		image tiling: crop images into list of squared images based on smaller size
-		"""
-		width, height = image.size
-		larger = max(height, width)
-		smaller = min(height, width)
-		stride = int(stride_ratio * smaller)
-		cropped_list = []
-
-		if smaller == height:
-			#slide horizontally
-			for x in range(0, larger, stride):
-				if x + smaller >= larger:
-					cropped_list.append(image.crop((larger - smaller, 0, larger, smaller)))
-				else:
-					cropped_list.append(image.crop((x, 0, x + smaller, smaller)))
-		else:
-			#slide vertically
-			for x in range(0, larger, stride):
-				if x + smaller >= larger:
-					cropped_list.append(image.crop((0, larger - smaller, smaller, larger)))
-				else:
-					cropped_list.append(image.crop((0, x, smaller, x + smaller)))
-
-		return cropped_list
 
 
 class WinCLIP(nn.Module):
@@ -371,19 +203,23 @@ class WinCLIP(nn.Module):
 
 				self.reference_bank.append(token_list)
 		else:
+			num_scales = len(masks)
+			self.reference_bank = [[] for x in range(num_scales)]
+			#one more for image scale
+			self.reference_bank.append([])
 			for image in ref_list:
 				window_cls, tokens, image_cls = self.encode_image(image, masks)
 
-				for cls in window_cls:
+				for index, cls in enumerate(window_cls):
 					cur_scale = [x for x in cls]
-					self.reference_bank.append(cur_scale)
+					self.reference_bank[index].extend(cur_scale)
 
 				token_list = []
 				tokens = tokens.squeeze()
 				for token in tokens:
 					token_list.append(token)
 
-				self.reference_bank.append(token_list)
+				self.reference_bank[-1].extend(token_list)
 
 		print("Reference bank generating finished.")
 
@@ -397,8 +233,17 @@ class WinCLIP(nn.Module):
 		:param normal: wanna get anomaly score or normality score?
 		"""
 		if isinstance(image_features, list):
-			pass
-			# for x in image:
+			score_list = []
+			for x in image_features:
+				if x.shape[0] != 1:
+					x = x.unsqueeze(0)	
+				score = (100.0 * x@text_features.T).softmax(dim=-1)
+
+				if not normal:
+					score_list.append(score[:, 1])
+				else:
+					score_list.append(score[:, 0])
+			return score_list
 		else:
 			if image_features.shape[0] != 1:
 				image_features = image_features.unsqueeze(0)
@@ -408,6 +253,54 @@ class WinCLIP(nn.Module):
 			else:
 				score = score[:, 0]
 			return score
+		
+	def textual_driven_anomaly_map(self, image_text_score, window_text_score=None, window_list=None, scale_indices=None):
+		"""
+		Generate textual-driven anomaly score map by distributing anomaly score across patches
+		(for current model type the map's gonna have shape (255,))
+		
+		:param image_text_score: ascore0 on image scale
+		:param window_text_score: a list containing ascore0 across windows on multiple scale
+		:param window_list: list of windows for each scale
+		:param scale_indices: starting indices for each scale (used to track window list)
+		"""
+		anomaly_score_map = []
+		#distribute window_scale score to each patch
+		cur_window_score = torch.zeros(15*15, device=DEVICE)
+		cur_patch_weights = torch.zeros(15*15, device=DEVICE)
+		for count, (score, window) in enumerate(zip(window_text_score, window_list)):
+			#distribute score to a tensor
+			#start a new scale then do average on previous scale
+			if count in scale_indices:
+				cur_window_score = cur_window_score / cur_patch_weights
+				anomaly_score_map.append(cur_window_score)
+
+				cur_window_score = torch.zeros(15*15, device=DEVICE)
+				cur_patch_weights = torch.zeros(15*15, device=DEVICE)
+
+			window = window.long() - 1
+			temp_score = torch.zeros(15 * 15, device=DEVICE)
+			temp_weight = torch.zeros(15 * 15, device=DEVICE)
+			temp_score[window] = 1.0 / score
+			temp_weight[window] = 1.0
+			cur_window_score += temp_score
+			cur_patch_weights += temp_weight
+			count += 1
+
+		#last scale
+		cur_window_score = cur_window_score / cur_patch_weights
+		anomaly_score_map.append(cur_window_score)
+
+		#distribute image_scale score
+		image_scale_score = torch.zeros(15*15, device=DEVICE)
+		image_scale_score = torch.full((15*15,), 1.0 / image_text_score.item(), device=DEVICE)
+		anomaly_score_map.append(image_scale_score)
+
+		anomaly_score_map = torch.stack(anomaly_score_map, dim=0)
+		anomaly_score_map = torch.mean(anomaly_score_map, dim=0)
+		anomaly_score_map = 1.0 - 1.0 / anomaly_score_map
+
+		return anomaly_score_map
 
 	def calculate_visual_anomaly_score(self, patch_feature, feature=None, window_masks=None):
 		"""
@@ -420,33 +313,34 @@ class WinCLIP(nn.Module):
 		
 		:param self: Description
 		:param feature: a batch of window-scale feature
-		:param patch_feature: penultimate feature map (including patch tokens at the end of the encoding phase)
+		:param patch_feature: penultimate feature map (including patch tokens at the end of the encoding phase right before pooling)
 		since the cls token of the whole image has gone through a projection layer after returning, it's no more in the
 		same dimension with the reference image's patch tokens, so i think using the patch tokens of the query image directly
 		might be a better choice
-		:param window_masks: window mask
+		:param window_masks: window mask (expected a list of generated window for each scale shape (nummask, len))
 		"""
 		# get the list of reference tokens
-		# per_scale_AC = []
 		anomaly_score_map = []
 		if feature is not None:
 			#calculate score for each non-image scale features
 			for index, (scale, window) in enumerate(zip(feature, window_masks)):
+				window = window.T
 				cur_reference_bank = self.reference_bank[index]
 				cur_reference_bank = torch.stack(cur_reference_bank, dim=0)
 
-				dot_product = scale@cur_reference_bank.T
+				dot_product = (scale@cur_reference_bank.T).max(dim=1)[0]
 				scale_score = 0.5 * (1.0 - dot_product)
-				all_anomaly_score, _ = scale_score.min(dim=1)
-				# prediction_score = all_anomaly_score.max()
-				# per_scale_AC.append(prediction_score)
 
 				per_scale_map = torch.zeros(15 * 15, device=DEVICE)
 				per_scale_weight = torch.zeros(15 * 15, device=DEVICE)
-				for x, score in zip(window, all_anomaly_score):
+				for x, score in zip(window, scale_score):
 					x = x.long() - 1
-					per_scale_map[x] += score
-					per_scale_weight += 1.0
+					cur_map = torch.zeros(15 * 15, device=DEVICE)
+					cur_weight = torch.zeros(15 * 15, device=DEVICE)
+					cur_map[x] = score
+					cur_weight[x] = 1.0
+					per_scale_map += cur_map
+					per_scale_weight += cur_weight
 				
 				per_scale_map = per_scale_map / per_scale_weight
 				anomaly_score_map.append(per_scale_map)
@@ -457,13 +351,10 @@ class WinCLIP(nn.Module):
 		cur_reference_bank = torch.stack(cur_reference_bank, dim=0)
 		patch_feature = F.normalize(patch_feature, dim=-1)        # (num_patches, D)
 		cur_reference_bank = F.normalize(cur_reference_bank, dim=-1)  # (num_refs, D)
-		dot_product = patch_feature@cur_reference_bank.T
-		image_score = 0.5 * (1.0 - dot_product)
-		image_score, _ = image_score.min(dim=1)
 
-		# per_scale_AC.append(image_score.max())
-		# AC_score = torch.stack(per_scale_AC, dim=0)
-		# AC_score = torch.mean(AC_score, dim=0)
+		patch_feature = patch_feature.squeeze(0)
+		dot_product = (patch_feature@cur_reference_bank.T).max(dim=1)[0]
+		image_score = 0.5 * (1.0 - dot_product)
 
 		anomaly_score_map.append(image_score.squeeze())
 		anomaly_map = torch.stack(anomaly_score_map, dim=0)
@@ -521,7 +412,7 @@ class WinCLIP(nn.Module):
 					for x in window_cls:
 						[window_cls_list.append(window) for window in x]
 
-					window_text_score = [self.calculate_text_anomaly_score(text_features, x, normal=True) for x in window_cls_list]
+					window_text_score = self.calculate_text_anomaly_score(text_features, window_cls_list, normal=True)
 					image_text_score = self.calculate_text_anomaly_score(text_features, image_cls, normal=True)
 
 					window_list = []
@@ -532,42 +423,7 @@ class WinCLIP(nn.Module):
 						scale_indices.append(index)
 						[window_list.append(window) for window in x]
 
-					anomaly_score_map = []
-					#distribute window_scale score to each patch
-					cur_window_score = torch.zeros(15*15, device=DEVICE)
-					cur_patch_weights = torch.zeros(15*15, device=DEVICE)
-					for count, (score, window) in enumerate(zip(window_text_score, window_list)):
-						#distribute score to a tensor
-						#start a new scale then do average on previous scale
-						if count in scale_indices:
-							cur_window_score = cur_window_score / cur_patch_weights
-							anomaly_score_map.append(cur_window_score)
-							index += 1
-
-							cur_window_score = torch.zeros(15*15, device=DEVICE)
-							cur_patch_weights = torch.zeros(15*15, device=DEVICE)
-
-						window = window.long() - 1
-						temp_score = torch.zeros(15 * 15, device=DEVICE)
-						temp_weight = torch.zeros(15 * 15, device=DEVICE)
-						temp_score[window] = 1.0 / score
-						temp_weight[window] = 1.0
-						cur_window_score += temp_score
-						cur_patch_weights += temp_weight
-						count += 1
-
-					#last scale
-					cur_window_score = cur_window_score / cur_patch_weights
-					anomaly_score_map.append(cur_window_score)
-
-					#distribute image_scale score
-					image_scale_score = torch.zeros(15*15, device=DEVICE)
-					image_scale_score = torch.full((15*15,), 1.0 / image_text_score.item(), device=DEVICE)
-					anomaly_score_map.append(image_scale_score)
-
-					anomaly_score_map = torch.stack(anomaly_score_map, dim=0)
-					anomaly_score_map = torch.mean(anomaly_score_map, dim=0)
-					anomaly_score_map = 1.0 - 1.0 / anomaly_score_map
+					anomaly_score_map = self.textual_driven_anomaly_map(image_text_score, window_text_score=window_text_score, window_list= window_list, scale_indices=scale_indices)
 
 					anomaly_map = anomaly_score_map.reshape(15, 15).unsqueeze(0)
 					anomaly_map = anomaly_map.unsqueeze(0)
@@ -588,7 +444,7 @@ class WinCLIP(nn.Module):
 					for x in window_cls:
 						[window_cls_list.append(window) for window in x]
 
-					window_text_score = [self.calculate_text_anomaly_score(text_features, x, normal=True) for x in window_cls_list]
+					window_text_score = self.calculate_text_anomaly_score(text_features, window_cls_list, normal=True)
 					image_text_score = self.calculate_text_anomaly_score(text_features, image_cls, normal=True)
 
 					window_list = []
@@ -599,139 +455,14 @@ class WinCLIP(nn.Module):
 						scale_indices.append(index)
 						[window_list.append(window) for window in x]
 
-					anomaly_score_map = []
-					#distribute window_scale score to each patch
-					cur_window_score = torch.zeros(15*15, device=DEVICE)
-					cur_patch_weights = torch.zeros(15*15, device=DEVICE)
-					for count, (score, window) in enumerate(zip(window_text_score, window_list)):
-						#distribute score to a tensor
-						#start a new scale then do average on previous scale
-						if count in scale_indices:
-							cur_window_score = cur_window_score / cur_patch_weights
-							anomaly_score_map.append(cur_window_score)
-							index += 1
-
-							cur_window_score = torch.zeros(15*15, device=DEVICE)
-							cur_patch_weights = torch.zeros(15*15, device=DEVICE)
-
-						window = window.long() - 1
-						temp_score = torch.zeros(15 * 15, device=DEVICE)
-						temp_weight = torch.zeros(15 * 15, device=DEVICE)
-						temp_score[window] = 1.0 / score
-						temp_weight[window] = 1.0
-						cur_window_score += temp_score
-						cur_patch_weights += temp_weight
-						count += 1
-
-					#last scale
-					cur_window_score = cur_window_score / cur_patch_weights
-					anomaly_score_map.append(cur_window_score)
-
-					#distribute image_scale score
-					image_scale_score = torch.zeros(15*15, device=DEVICE)
-					image_scale_score = torch.full((15*15,), 1.0 / image_text_score.item(), device=DEVICE)
-					anomaly_score_map.append(image_scale_score)
-
-					anomaly_score_map = torch.stack(anomaly_score_map, dim=0)
-					anomaly_score_map = torch.mean(anomaly_score_map, dim=0)
-					anomaly_score_map = 1.0 - 1.0 / anomaly_score_map
+					textual_score_map = self.textual_driven_anomaly_map(image_text_score, window_text_score=window_text_score, window_list= window_list, scale_indices=scale_indices)
 
 					visual_score_map = self.calculate_visual_anomaly_score(tokens, window_cls, window_masks)
 
-					final_map = visual_score_map + anomaly_score_map
+					# final_map = 1.0 / (1.0 / visual_score_map + 1.0 / anomaly_score_map)
+					final_map = visual_score_map + textual_score_map
 					final_map = final_map.reshape(15, 15).unsqueeze(0)
 					final_map = final_map.unsqueeze(0)
 					ret_map = F.interpolate(final_map, size=(240, 240), mode='bilinear', align_corners=False)
 
 					return ret_map.squeeze().detach().cpu().numpy()
-
-
-#print a segmentation view
-def segment(anomaly_map, img, normalized=True, isDefected=True):
-	print("State: Anomaly" if isDefected else "State: Normal")
-	if normalized:
-		mean = torch.tensor(MEAN).view(3, 1, 1)
-		std = torch.tensor(STD).view(3, 1, 1)
-		image = img * std + mean
-		image = image.clamp(0, 1)
-		image = image.permute(1, 2, 0)
-		plt.figure(figsize=(6,6))
-		plt.title("Segmentation")
-		plt.imshow(image)
-		plt.imshow(anomaly_map, cmap='jet', alpha=0.5)
-		plt.colorbar(label='Anomaly Score')
-		plt.axis("off")
-		plt.show()
-	else:
-		image = image.clamp(0, 1)
-		image = image.permute(1, 2, 0)
-		plt.figure(figsize=(6,6))
-		plt.title("Segmentation")
-		plt.imshow(image)
-		plt.imshow(anomaly_map, cmap='jet', alpha=0.5)
-		plt.colorbar(label='Anomaly Score')
-		plt.axis("off")
-		plt.show()
-
-def run():
-	model = WinCLIP(state_level, template_level).to(DEVICE)
-	ds = ADDataset("bottle", DS_DIR, shot=1, preprocess=model.preprocess)
-	ref_list, img, isAbno, indice, image_path = ds[3]
-	ref_list = [x.unsqueeze(0) for x in ref_list]
-	anomaly_map = model.forward("bottle", img.unsqueeze(0), shot=1, option="AS", ref_list=ref_list)
-
-	# print(f"Truth: {isAbno}")
-	# print(f"Predict score: {anomaly_score}")
-	segment(anomaly_map, img)
-
-def eval():
-	win_model = WinCLIP(state_level, template_level)
-	win_model.to(DEVICE)
-
-	all_auroc = []
-	all_aupr = []
-	all_f1 = []
-	all_score = []
-	all_gt = []
-	with torch.no_grad():
-		for object_name in OBJECT_TYPE:
-			score_list = []
-			gt_list = []
-			mvtec_adds = ADDataset(object_name, DS_DIR, shot=0, preprocess=win_model.preprocess)
-			dataloader = DataLoader(mvtec_adds, batch_size=1, num_workers=1, shuffle=False)
-			for data in tqdm(dataloader, desc="Running: "):
-				ref_list, img, isAbno, indice, img_path = data
-				score = win_model.forward(object_name, img, ref_list, shot=0, option="AC")
-				score_list.append(score)
-				gt_list.append(isAbno[0].numpy())
-				all_score.append(score)
-				all_gt.append(isAbno[0].numpy())
-
-			auroc = roc_auc_score(gt_list, score_list)
-			precision, recall, _ = precision_recall_curve(gt_list, score_list)
-			aupr = auc(recall, precision)
-			f1_max = 0
-			for threshold in np.arange(0, 1, 0.01):
-				y_pred = (score_list > threshold).astype(int)
-				f1 = f1_score(gt_list, y_pred)
-				if f1 > f1_max:
-					f1_max = f1
-			print("Obj Type: {}, AUROC={}, AUPR={}, F1_MAX={}".format(object_name, auroc, aupr, f1_max))
-			all_auroc.append(auroc)
-			all_aupr.append(aupr)
-			all_f1.append(f1_max)
-
-	print("AVG_AUROC: {}, AVG_AUPR: {}, AVG_F1_MAX: {}".format(np.mean(all_auroc), np.mean(all_aupr), np.mean(all_f1)))
-	precision, recall, _ = precision_recall_curve(all_gt, all_score)
-	aupr = auc(recall, precision)
-	f1_max = 0
-	for threshold in np.arange(0, 1, 0.01):
-		y_pred = (all_score > threshold).astype(int)
-		f1 = f1_score(all_gt, y_pred)
-		if f1 > f1_max:
-			f1_max = f1
-	print("All AUROC: {}, All AUPR: {}, All F1_MAX: {}".format(roc_auc_score(all_gt, all_score), aupr, f1_max))
-
-
-if __name__ == "__main__":
-    eval()
