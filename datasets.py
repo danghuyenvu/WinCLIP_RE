@@ -4,6 +4,7 @@ import numpy as np
 import glob
 import os
 from PIL import Image
+import torch
 
 MEAN = (0.48145466, 0.4578275, 0.40821073)
 STD = (0.26862954, 0.26130258, 0.27577711)
@@ -112,11 +113,23 @@ class ADDataset(Dataset):
 		image_path = self.img_path[indice]
 		folder_path, image = os.path.split(image_path)
 		isAbno = np.array([1], dtype=np.float32)
+		gt = None
 		if os.path.basename(folder_path) == "good":
 			isAbno = np.array([0], dtype=np.float32)
+			gt = torch.zeros((240, 240))
+		else:
+			#get groundtruth masks
+			gt_path = image_path.replace("test", "ground_truth")
+			base, ext = os.path.splitext(gt_path)
+			gt_path = base + "_mask" + ext
+			gt = Image.open(gt_path)
+			gt = gt.resize((240,240), resample=Image.NEAREST)
+			to_tensor = transforms.ToTensor()
+			gt = to_tensor(gt)
+			
 		img = self.transform_image(image_path, self.preprocess) if self.preprocess is not None else self.transform_image(image_path, self.pre_transform)
 
-		return ref_list, img, isAbno, indice, image_path
+		return ref_list, img, isAbno, indice, gt
 
 	def __len__(self):
 		return len(self.img_path)

@@ -44,8 +44,6 @@ template_level = [
 	"a photo of the {} for anomaly detection."
 ]
 
-DS_DIR = "../Datasets/MVtecAD"
-
 
 class WinCLIP(nn.Module):
 	def __init__(self, states, templates):
