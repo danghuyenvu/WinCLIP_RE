@@ -27,4 +27,4 @@ TO BE UPDATED
 Currently working on [MVtecAD](https://www.mvtec.com/company/research/datasets/mvtec-ad), will be updating for VisA or other datasets soon
 
 ## Acknowledgement
-Many codes borrowed from [OpenCLIP](https://github.com/mlfoundations/open_clip) and [caoyunkang/WinClip](https://github.com/caoyunkang/WinClip), really appreciate them for helping me understand the paper.
+Many codes borrowed from [OpenCLIP](https://github.com/mlfoundations/open_clip) and [caoyunkang](https://github.com/caoyunkang/WinClip), really appreciate them for helping me understand the paper.
