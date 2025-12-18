@@ -6,47 +6,10 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 import cv2
-
-#constants parameters
-MODEL_NAME = "ViT-B-16-plus-240"
-PRETRAINED = "laion400m_e32"
-RE_SIZE = 240
-DEVICE = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
-
-#setup states and template text for compositional promt ensemble
-state_level = {
-	"normal":["{}", "flawless {}", "perfect {}", "unblemished {}",
-						"{} without flaw", "{} without defect", "{} without damage"],
-	"anomaly":["damaged {}", "{} with flaw", "{} with defect", "{} with damage"]
-}
-template_level = [
-	"a cropped photo of the {}.",
-	"a cropped photo of a {}.",
-	"a close-up photo of a {}.",
-	"a close-up photo of the {}.",
-	"a bright photo of a {}.",
-	"a bright photo of the {}.",
-	"a dark photo of a {}.",
-	"a dark photo of the {}.",
-	"a jpeg corrupted photo of a {}.",
-	"a jpeg corrupted photo of the {}.",
-	"a blurry photo of the {}.",
-	"a blurry photo of a {}.",
-	"a photo of the {}.",
-	"a photo of a {}.",
-	"a photo of a small {}.",
-	"a photo of the small {}.",
-	"a photo of a large {}.",
-	"a photo of the large {}.",
-	"a photo of a {} for visual inspection.",
-	"a photo of the {} for visual inspection.",
-	"a photo of a {} for anomaly detection.",
-	"a photo of the {} for anomaly detection."
-]
-
+from params import MODEL_NAME, DEVICE
 
 class WinCLIP(nn.Module):
-	def __init__(self, states, templates):
+	def __init__(self, states, templates, shots=0, option='AC'):
 		super().__init__()
 		self.model, _, self.preprocess = open_clip.create_model_and_transforms(MODEL_NAME, pretrained="winCLIP_ViT_B16P_laion400m.pt")
 		# self.model.load_state_dict(torch.load("winCLIP_ViT_B16P_laion400m.pt", map_location=DEVICE))
@@ -58,9 +21,8 @@ class WinCLIP(nn.Module):
 
 		self.state_level = states
 		self.template_level = templates
-
-		#set output_tokens to true to get output tokens instead of pooled cls
-		# self.visual.output_tokens = True
+		self.shots = shots
+		self.option = option
 
 	@torch.no_grad()
 	def encode_image(self, img, windowmask=None, normalize=False):
@@ -376,8 +338,8 @@ class WinCLIP(nn.Module):
 			text_features = self.encode_text(object_name)
 			image = image.to(DEVICE)
 			ref_list = [x.to(DEVICE) for x in ref_list]
-			if option=="AC":
-				if shot == 0:
+			if self.option == "AC":
+				if self.shots == 0:
 					#WinCLIP zero-shot AC basically applying CPE to CLIP image encoder and text encoder
 					image_features = self.encode_image(image)
 					return self.calculate_text_anomaly_score(text_features, image_features).detach().cpu().numpy()
@@ -399,7 +361,7 @@ class WinCLIP(nn.Module):
 					print(f"vision: {vision_anomaly_score}")
 					return AC_score.detach().cpu().numpy()
 			else:
-				if shot == 0:
+				if self.shots == 0:
 					#zero-shot AS apply multi-scale aggregation score across pixels
 					window_masks_1 = self.gen_window_mask(kernel_size=32).squeeze().to(DEVICE)
 					window_masks_2 = self.gen_window_mask(kernel_size=48).squeeze().to(DEVICE)
