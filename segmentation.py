@@ -10,77 +10,51 @@ import matplotlib
 
 import sys
 
-
 #print a segmentation view
-def segment(anomaly_map, img, normalized=True, isDefected=True):
+def segment(anomaly_map, img, normalized=True, isDefected=True, save_path=None):
     print("State: Anomaly" if isDefected else "State: Normal")
+    image = img
     if normalized:
         mean = torch.tensor(MEAN).view(3, 1, 1)
         std = torch.tensor(STD).view(3, 1, 1)
         image = img * std + mean
-        image = image.clamp(0, 1)
-        image = image.permute(1, 2, 0)
-        plt.figure(figsize=(6,6))
-        plt.title("Segmentation")
-        plt.imshow(image)
-        plt.imshow(anomaly_map, cmap='jet', alpha=0.5)
-        plt.colorbar(label='Anomaly Score')
-        plt.axis("off")
-        plt.show()
+    image = image.clamp(0, 1)
+    image = image.permute(1, 2, 0)
+    plt.figure(figsize=(6,6))
+    plt.title("Segmentation")
+    plt.imshow(image)
+    plt.imshow(anomaly_map, cmap='jet', alpha=0.5)
+    plt.colorbar(label='Anomaly Score')
+    plt.axis("off")
+    if save_path: 
+        plt.savefig(save_path, bbox_inches="tight", dpi=300)
+        plt.close()
     else:
-        image = image.clamp(0, 1)
-        image = image.permute(1, 2, 0)
-        plt.figure(figsize=(6,6))
-        plt.title("Segmentation")
-        plt.imshow(image)
-        plt.imshow(anomaly_map, cmap='jet', alpha=0.5)
-        plt.colorbar(label='Anomaly Score')
-        plt.axis("off")
         plt.show()
 
-def plot(anomaly_map, img, normalized=True):
-    if normalized:
-        mean = torch.tensor(MEAN).view(3, 1, 1)
-        std = torch.tensor(STD).view(3, 1, 1)
-        image = img * std + mean
-        image = image.clamp(0, 1)
-        image = image.permute(1, 2, 0)
+@torch.no_grad()
+def run(object_name, dataset='mvtec-ad', shots=0, dir_path=None):
+    model = WinCLIP(state_level, template_level, shots=shots, option='AS').to(DEVICE)
+    ds = init_dataset(dataset, object_name, shot=shots, preprocess=model.preprocess, eval=False)
+    loader = DataLoader(ds, batch_size=1, num_workers=0, shuffle=False)
+    for data in tqdm(loader, desc="running"):
+        ref_list, img, isAbno, indice, gt, sizes = data
+        if (isAbno[0] == 0.):
+            continue
+        score = model(object_name, img, ref_list, shot=shots, option="AS", out_size=sizes)
+        save_file = os.path.join(dir_path, f"seg_{indice.item()}.png") if dir_path is not None else None
+        segment(score, img.squeeze(0), isDefected=True, save_path=save_file)
+        if save_file is not None:
+            mask_file = save_file.replace("seg_", "mask_")
+            plt.figure(figsize=(6,6))
+            plt.title("Mask")
+            plt.imshow(gt.squeeze(), cmap='gray')
+            plt.axis("off")
+            plt.savefig(mask_file, bbox_inches="tight", dpi=300)
+            plt.close()
+        if save_file is None:
+            break
 
-        plt.figure(figsize=(6,6))
-        plt.title("Anomaly map")
-        plt.imshow(anomaly_map, cmap='jet')
-        plt.colorbar(label='Anomaly Score')
-        plt.axis("off")
-
-        plt.figure(figsize=(6,6))
-        plt.title("Image")
-        plt.imshow(image)
-        plt.colorbar(label='Haha')
-        plt.axis("off")
-        plt.show()
-    else:
-        image = image.clamp(0, 1)
-        image = image.permute(1, 2, 0)
-        plt.figure(figsize=(6,6))
-        plt.title("Anomaly map")
-        plt.imshow(anomaly_map, cmap='jet')
-        plt.colorbar(label='Anomaly Score')
-        plt.axis("off")
-
-        plt.figure(figsize=(6,6))
-        plt.title("Image")
-        plt.imshow(image)
-        plt.colorbar(label='Haha')
-        plt.axis("off")
-        plt.show()
-
-def run():
-    model = WinCLIP(state_level, template_level, shots=2, option='AS').to(DEVICE)
-    ds = MVtecADDataset("bottle", DS_DIR[0], shot=2, preprocess=model.preprocess)
-    ref_list, img, isAbno, indice, gt = ds[15]
-    ref_list = [x.unsqueeze(0) for x in ref_list]
-    anomaly_map = model.forward("bottle", img.unsqueeze(0), shot=0, option="AS", ref_list=ref_list)
-    plot(anomaly_map, img)
 
 if __name__ == "__main__":
-    run()
+    run("carpet", shots=1, dir_path="../Results/MVtec-AD/carpet_1")
