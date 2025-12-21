@@ -18,13 +18,23 @@ Unofficial reimplementation of: [CVPR 2023] WinCLIP: Zero-/Few-Shot Anomaly Clas
 TO BE UPDATED
 ```
 
-## Run
+## Run Evaluation
+To run evaluation, go to repo folder, modify eval.py on ds, param.py for directory, device, etc
 ```bash
-TO BE UPDATED
+python eval.py <shots> -mode
 ```
+to run evaluation on <shots>, mode = AC or AS for anomaly classification or segmentation
+
+## Get Image segmentation result visually
+Modify data directory in param.py, modify directory, shot, object name in segmentation.py to specify where to save result, number of shot, object
+```bash
+python segmentation.py
+```
+get result in ur specified directory
 
 ## Data
-Currently working on [MVtecAD](https://www.mvtec.com/company/research/datasets/mvtec-ad), will be updating for VisA or other datasets soon
+Produce promissing results on [MVtecAD](https://www.mvtec.com/company/research/datasets/mvtec-ad)\
+Also available for [VisA](https://github.com/amazon-science/spot-diff?tab=readme-ov-file), (with limitations)
 
 ## Acknowledgement
-Many codes borrowed from [OpenCLIP](https://github.com/mlfoundations/open_clip) and [caoyunkang](https://github.com/caoyunkang/WinClip), really appreciate them for helping me understand the paper.
+Many codes borrowed from [OpenCLIP](https://github.com/mlfoundations/open_clip) and [caoyunkang](https://github.com/caoyunkang/WinClip), your works helped me a lot during the process!
