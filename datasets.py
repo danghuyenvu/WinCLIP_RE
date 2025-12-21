@@ -6,14 +6,20 @@ import os
 from PIL import Image
 import torch
 import csv
-from params import MVTEC_AD_OBJ, MEAN, STD, VISA_OBJ
+from params import MVTEC_AD_OBJ, MEAN, STD, VISA_OBJ, DS_DIR
+
+def init_dataset(ds_name, object_name, spatial_size=240, shot=0, preprocess=None, eval=True):
+	if ds_name == 'mvtec-ad':
+		return MVtecADDataset(object_name, data_dir=DS_DIR[0], spatial_size=spatial_size, shot=shot, preprocess=preprocess, eval=eval)
+	else: return VisADataset(object_name, data_dir=DS_DIR[1], spatial_size=spatial_size, shot=shot, preprocess=preprocess)
 
 class MVtecADDataset(Dataset):
 	"""
 	Dataset class for MVtec AD data set
 	"""
-	def __init__(self, obj_type, data_dir, spatial_size=240, mode="train", shot=0, preprocess=None):
+	def __init__(self, obj_type, data_dir, spatial_size=240, mode="train", shot=0, preprocess=None, eval=True):
 		super(MVtecADDataset, self).__init__()
+		self.eval = eval
 		self.shot = shot
 		self.object_type = obj_type if obj_type != "all" else MVTEC_AD_OBJ
 		self.data_dir = data_dir
@@ -70,9 +76,9 @@ class MVtecADDataset(Dataset):
 			normal_image = np.random.RandomState(10).choice(normal_image, self.shot)
 			for x in normal_image:
 				if self.preprocess is not None:
-					ref_list.append(self.transform_image(x, self.preprocess))
+					ref_list.append(self.transform_image(x, self.preprocess)[0])
 				else:
-					ref_list.append(self.transform_image(x, self.pre_transform))
+					ref_list.append(self.transform_image(x, self.pre_transform)[0])
 
 		if indice >= len(self.img_path):
 			raise ValueError("Invalid indice")
@@ -80,22 +86,25 @@ class MVtecADDataset(Dataset):
 		folder_path, image = os.path.split(image_path)
 		isAbno = np.array([1], dtype=np.float32)
 		gt = None
+		img, height, width = self.transform_image(image_path, self.preprocess) if self.preprocess is not None else self.transform_image(image_path, self.pre_transform)
+
 		if os.path.basename(folder_path) == "good":
 			isAbno = np.array([0], dtype=np.float32)
-			gt = torch.zeros((240, 240))
+			if self.eval:
+				gt = np.zeros(height * width, dtype=np.float32)
+			else:
+				gt = np.zeros((height, width), dtype=np.uint8)
 		else:
 			#get groundtruth masks
 			gt_path = image_path.replace("test", "ground_truth")
 			base, ext = os.path.splitext(gt_path)
 			gt_path = base + "_mask" + ext
 			gt = Image.open(gt_path)
-			gt = gt.resize((240,240), resample=Image.NEAREST)
-			to_tensor = transforms.ToTensor()
-			gt = to_tensor(gt)
-			
-		img = self.transform_image(image_path, self.preprocess) if self.preprocess is not None else self.transform_image(image_path, self.pre_transform)
+			gt = np.array(gt)
+			if self.eval:
+				gt = gt.reshape(-1)
 
-		return ref_list, img, isAbno, indice, gt
+		return ref_list, img, isAbno, indice, gt, (height, width)
 
 	def __len__(self):
 		return len(self.img_path)
@@ -108,13 +117,13 @@ class MVtecADDataset(Dataset):
 		height, width = image.size
 		if height == width:
 			processed = preprocess(image)
-			return processed
+			return processed, height, width
 		else:
 			cropped_image = self.crop_image(image)
 			processed = []
 			for i in cropped_image:
 				processed.append(preprocess(i))
-			return processed
+			return processed, height, width
 
 	def crop_image(self, image, stride_ratio=0.8):
 		"""
@@ -203,20 +212,27 @@ class VisADataset(Dataset):
 	
 	def __getitem__(self, indice):
 		ref_list = []
-		img = None
 		gt = None
 		if self.shot != 0:
 			#get the first shot number of images for reference
-			normal_image = self.img_path[:self.shots]
+			normal_image = self.img_path[:self.shot]
 
 			if isinstance(self.object_type, list):
 				raise ValueError("Only all for Zero shot")
 			
 			for x in normal_image:
 				if self.preprocess is not None:
-					ref_list.append(self.transform_image(x, self.preprocess))
+					ret = self.transform_image(x, self.preprocess)
+					if isinstance(ret, list):
+						ref_list.extend(ret)
+					else:
+						ref_list.append(ret)
 				else:
-					ref_list.append(self.transform_image(x, self.pre_transform))
+					ret = self.transform_image(x, self.pre_transform)
+					if isinstance(ret, list):
+						ref_list.extend(ret)
+					else:
+						ref_list.append(ret)
 
 		if indice + self.shot >= len(self.img_path):
 			raise ValueError("Invalid indice")
@@ -229,6 +245,8 @@ class VisADataset(Dataset):
 			gt = Image.open(gt_path)
 			to_tensor = transforms.ToTensor()
 			gt = to_tensor(gt)
+		else:
+			gt = torch.zeros(15 * 15)
 		
 		image = self.transform_image(image_path, self.preprocess) if self.preprocess is not None else self.transform_image(image_path, self.pre_transform)
 
