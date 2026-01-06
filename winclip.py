@@ -39,20 +39,22 @@ class WinCLIP(nn.Module):
             x = x.reshape(x.shape[0], x.shape[1], -1)
             x = x.permute(0, 2, 1)
 
-            #concat cls and add positional embedding
-            x = torch.cat([self.visual.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
-            x = x + self.visual.positional_embedding.to(x.dtype)
+            # concat cls and add positional embedding (ensure dtype/device match)
+            cls_emb = self.visual.class_embedding.to(device=x.device, dtype=x.dtype)
+            pos_emb = self.visual.positional_embedding.to(device=x.device, dtype=x.dtype)
+            x = torch.cat([cls_emb + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+            x = x + pos_emb
             window_cls_list = []
             for mask in windowmask:
                 #perform window masking by selecting patches to pass in transformer encoder
                 scaled_x = []
                 mask = mask.T #now has shape (num_mask, mask_size)
                 num_mask, L = mask.shape
-                class_index = torch.zeros((mask.shape[0], 1), dtype=torch.int32).to(mask)
-                mask = torch.cat((class_index, mask.int()), dim=1)
+                class_index = torch.zeros((mask.shape[0], 1), dtype=torch.long, device=mask.device)
+                mask = torch.cat((class_index, mask.long()), dim=1)
                 for i in mask:
-                    mx = torch.index_select(x, 1, i.int())
-                    scaled_x.append(torch.index_select(x, 1, i.int()))
+                    idx = i.long()
+                    scaled_x.append(torch.index_select(x, 1, idx))
                 mx = torch.cat(scaled_x)
                 mx = self.visual.patch_dropout(mx)
                 mx = self.visual.ln_pre(mx)
@@ -64,7 +66,7 @@ class WinCLIP(nn.Module):
                 if self.visual.proj is not None:
                     cls = cls @ self.visual.proj
 
-                cls /= cls.norm(dim=-1, keepdim=True)
+                cls = F.normalize(cls, p=2, dim=-1, eps=1e-8)
 
                 window_cls_list.append(cls)
 
@@ -78,15 +80,15 @@ class WinCLIP(nn.Module):
             if self.visual.proj is not None:
                 cls = cls @ self.visual.proj
 
-            cls /= cls.norm(dim=-1, keepdim=True)
+            cls = F.normalize(cls, p=2, dim=-1, eps=1e-8)
 
-            tokens /= tokens.norm(dim=-1, keepdim=True)
+            tokens = F.normalize(tokens, p=2, dim=-1, eps=1e-8)
 
             return window_cls_list, tokens, cls
         else:
             #getting the image scale feature then just get the cls token
             features = self.model.encode_image(img)
-            return features / features.norm(dim=-1, keepdim=True)
+            return F.normalize(features, p=2, dim=-1, eps=1e-8)
 
     @torch.no_grad()
     def encode_text(self, object_name='all'):
@@ -113,7 +115,7 @@ class WinCLIP(nn.Module):
         abno_texts_f = torch.mean(abno_texts_f, dim=0, keepdim=True)
 
         text_features = torch.cat([normal_texts_f, abno_texts_f], dim=0)
-        text_features /= text_features.norm(dim=-1, keepdim=True)
+        text_features = F.normalize(text_features, p=2, dim=-1, eps=1e-8)
 
         return text_features
 
@@ -281,7 +283,6 @@ class WinCLIP(nn.Module):
                 window = window.T
                 cur_reference_bank = self.reference_bank[index]
                 cur_reference_bank = torch.stack(cur_reference_bank, dim=0)
-
                 dot_product = (scale@cur_reference_bank.T).max(dim=1)[0]
                 scale_score = 0.5 * (1.0 - dot_product)
 
@@ -295,10 +296,9 @@ class WinCLIP(nn.Module):
                     cur_weight[x] = 1.0
                     per_scale_map += cur_map
                     per_scale_weight += cur_weight
-                
+
                 per_scale_map = per_scale_map / per_scale_weight
                 anomaly_score_map.append(per_scale_map)
-        
 
         #calculate association score for image scale feature
         cur_reference_bank = self.reference_bank[-1]

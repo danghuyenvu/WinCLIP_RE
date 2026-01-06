@@ -12,7 +12,6 @@ import sys
 
 #print a segmentation view
 def segment(anomaly_map, img, normalized=True, isDefected=True, save_path=None):
-    print("State: Anomaly" if isDefected else "State: Normal")
     image = img
     if normalized:
         mean = torch.tensor(MEAN).view(3, 1, 1)
@@ -33,15 +32,20 @@ def segment(anomaly_map, img, normalized=True, isDefected=True, save_path=None):
         plt.show()
 
 @torch.no_grad()
-def run(object_name, dataset='mvtec-ad', shots=0, dir_path=None):
+def run(object_name, dataset='mvtec-ad', shots=0, dir_path=None, num=5):
     model = WinCLIP(state_level, template_level, shots=shots, option='AS').to(DEVICE)
-    ds = init_dataset(dataset, object_name, shot=shots, preprocess=model.preprocess, eval=False)
+    ds = init_dataset(dataset, object_name, shot=shots, preprocess=model.preprocess)
     loader = DataLoader(ds, batch_size=1, num_workers=0, shuffle=False)
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path)
+    count = 0
     for data in tqdm(loader, desc="running"):
-        ref_list, img, isAbno, indice, gt, sizes = data
-        if (isAbno[0] == 0.):
+        if count >= num:
+            break
+        ref_list, img, isAbno, indice, gt = data
+        if isAbno.item() == 0:
             continue
-        score = model(object_name, img, ref_list, shot=shots, option="AS", out_size=sizes)
+        score = model(object_name, img, ref_list, shot=shots, option="AS")
         save_file = os.path.join(dir_path, f"seg_{indice.item()}.png") if dir_path is not None else None
         segment(score, img.squeeze(0), isDefected=True, save_path=save_file)
         if save_file is not None:
@@ -54,7 +58,9 @@ def run(object_name, dataset='mvtec-ad', shots=0, dir_path=None):
             plt.close()
         if save_file is None:
             break
+        count += 1
 
 
 if __name__ == "__main__":
-    run("carpet", shots=1, dir_path="../Results/MVtec-AD/carpet_1")
+    run("screw", shots=1, dir_path="../Results/MVtec-AD/screw_1", num=15)
+    # run("cashew", shots=1, dir_path="../Results/VisA/cashew_1", num=10, dataset='visa')

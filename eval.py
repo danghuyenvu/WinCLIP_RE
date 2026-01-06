@@ -95,8 +95,14 @@ def eval(shots=0, mode='AC', dataset='mvtec-ad'):
                     ref_list, img, isAbno, indice, gt, sizes = data
                     score = win_model.forward(object_name, img, ref_list, shot=shots, option=mode, out_size=sizes)
                     score_list.append(score)
-                    gt = gt.squeeze(0).numpy()
-                    gt[gt > 0] = 1
+                    if isinstance(gt, list):
+                        for x in gt:
+                            x = x.squeeze(0).numpy()
+                            x[x > 0] = 1
+                        gt = np.mean(gt)
+                    else:
+                        gt = gt.squeeze(0).numpy()
+                        gt[gt > 0] = 1
                     gt_list.append(gt)
                 
                 scores = np.array(score_list)

@@ -8,7 +8,7 @@ import torch
 import csv
 from params import MVTEC_AD_OBJ, MEAN, STD, VISA_OBJ, DS_DIR
 
-def init_dataset(ds_name, object_name, spatial_size=240, shot=0, preprocess=None, eval=True):
+def init_dataset(ds_name, object_name, spatial_size=240, shot=0, preprocess=None):
     if ds_name == 'mvtec-ad':
         return MVtecADDataset(object_name, data_dir=DS_DIR[0], spatial_size=spatial_size, shot=shot, preprocess=preprocess)
     else: return VisADataset(object_name, data_dir=DS_DIR[1], spatial_size=spatial_size, shot=shot, preprocess=preprocess)
@@ -75,9 +75,9 @@ class MVtecADDataset(Dataset):
             normal_image = np.random.RandomState(10).choice(normal_image, self.shot)
             for x in normal_image:
                 if self.preprocess is not None:
-                    ref_list.append(self.transform_image(x, self.preprocess)[0])
+                    ref_list.append(self.transform_image(x, self.preprocess))
                 else:
-                    ref_list.append(self.transform_image(x, self.pre_transform)[0])
+                    ref_list.append(self.transform_image(x, self.pre_transform))
 
         if indice >= len(self.img_path):
             raise ValueError("Invalid indice")
@@ -85,7 +85,7 @@ class MVtecADDataset(Dataset):
         folder_path, image = os.path.split(image_path)
         isAbno = np.array([1], dtype=np.float32)
         gt = None
-        img, height, width = self.transform_image(image_path, self.preprocess) if self.preprocess is not None else self.transform_image(image_path, self.pre_transform)
+        img = self.transform_image(image_path, self.preprocess) if self.preprocess is not None else self.transform_image(image_path, self.pre_transform)
 
         if os.path.basename(folder_path) == "good":
             isAbno = np.array([0], dtype=np.float32)
@@ -99,7 +99,7 @@ class MVtecADDataset(Dataset):
             gt = gt.resize((240,240), Image.BICUBIC)
             gt = np.array(gt)
 
-        return ref_list, img, isAbno, indice, gt, (height, width)
+        return ref_list, img, isAbno, indice, gt
 
     def __len__(self):
         return len(self.img_path)
@@ -112,13 +112,13 @@ class MVtecADDataset(Dataset):
         width, height = image.size
         if height == width:
             processed = preprocess(image)
-            return processed, height, width
+            return processed
         else:
             cropped_image = self.crop_image(image)
             processed = []
             for i in cropped_image:
                 processed.append(preprocess(i))
-            return processed, height, width
+            return processed
 
     def crop_image(self, image, stride_ratio=0.8):
         """
@@ -246,23 +246,32 @@ class VisADataset(Dataset):
 
         if gt_path is not None:
             gt = Image.open(gt_path)
-            to_tensor = transforms.ToTensor()
-            gt = to_tensor(gt)
+            gt = gt.resize((240,240), Image.NEAREST)
+            gt = np.array(gt)
+            # width, height = gt.size
+            # if width != height:
+            #     gt = self.crop_image(gt)
+            #     gt = [np.array(x.resize((240, 240), Image.BICUBIC)) for x in gt]
+            #     gt = np.mean(gt, axis=0).astype(np.uint8)
+            # else:
+            #     gt = np.array(gt.resize((240, 240), Image.BICUBIC), dtype=np.uint8)
         else:
-            gt = torch.zeros(15 * 15)
+            gt = np.zeros((240, 240), dtype=np.uint8)
         
         image = self.transform_image(image_path, self.preprocess) if self.preprocess is not None else self.transform_image(image_path, self.pre_transform)
 
         return ref_list, image, image_label, indice, gt
 
     def __len__(self):
-        return len(self.img_path) - self.shot
+        return len(self.img_path)
 
     def transform_image(self, image, preprocess=None):
         """
         do pretransform for image
         """
         image = Image.open(image)
+        processed = preprocess(image)
+        return processed
         width, height = image.size
         if height == width:
             processed = preprocess(image)
