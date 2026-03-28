@@ -8,10 +8,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
 
-import sys
+import os, sys, argparse, json
 
 #print a segmentation view
-def segment(anomaly_map, img, normalized=True, isDefected=True, save_path=None):
+def segment(anomaly_map, img, normalized=True, save_path=None):
     image = img
     if normalized:
         mean = torch.tensor(MEAN).view(3, 1, 1)
@@ -60,7 +60,49 @@ def run(object_name, dataset='mvtec-ad', shots=0, dir_path=None, num=5):
             break
         count += 1
 
+class CustomArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        # Instead of printing the error message, just show help
+        self.print_help(sys.stderr)
+        sys.exit(2)
+
+def main():
+    global DEVICE
+    parser = CustomArgumentParser(description="Run WinCLIP anomaly segmentation on user images")
+    parser.add_argument("-i", "--image", required=True, help="Path to target image")
+    parser.add_argument("-r", "--result", required=True, help="Path to result folder")
+    parser.add_argument("-s", "--shots", type=int, default=0, help="Number of shots (default: 0 for zero-shot)")
+    parser.add_argument("-re", "--references", help="Path to reference folder (required if shots > 0)")
+    parser.add_argument("-o", "--object-name", required=True, help="Name of the object")
+    parser.add_argument("-p", "--prompts", help="Path to custom prompts file (optional)")
+    parser.add_argument("-d", "--device", help="Device name to use (cuda, mps, cpu, default = cpu/mps)")
+    args = parser.parse_args()
+
+    # Load prompts if provided
+    state_level_local, template_level_local = state_level, template_level
+    if args.prompts:
+        with open(args.prompts, "r") as f:
+            prompts = json.load(f)
+        state_level_local = prompts["state_level"]
+        template_level_local = prompts["template_level"]
+
+    if args.device:
+        DEVICE = args.device
+    model = WinCLIP(state_level_local, template_level_local, shots=args.shots, option="AS").to(DEVICE)
+
+    ds = UserDataset(args.object_name, data_dir=args.image, shot=args.shots, preprocess=model.preprocess, reference_dir=args.references)
+
+    loader = DataLoader(ds, batch_size=1, num_workers=0, shuffle=False)
+    if not os.path.exists(args.result):
+        os.makedirs(args.result)
+
+    for data in tqdm(loader, desc="running"):
+        ref_list, img, _, indice, _ = data
+        score = model(args.object_name, img, ref_list, shot=args.shots, option="AS")
+        save_file = os.path.join(args.result, f"seg_{indice.item()}.png")
+        segment(score, img.squeeze(0), save_path=save_file)
+
+    print(f"Segmentation result saved to {args.result}")
 
 if __name__ == "__main__":
-    run("screw", shots=1, dir_path="../Results/MVtec-AD/screw_1", num=15)
-    # run("cashew", shots=1, dir_path="../Results/VisA/cashew_1", num=10, dataset='visa')
+    main()

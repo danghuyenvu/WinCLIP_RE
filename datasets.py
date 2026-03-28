@@ -6,6 +6,7 @@ import os
 from PIL import Image
 import torch
 import csv
+import sys
 from params import MVTEC_AD_OBJ, MEAN, STD, VISA_OBJ, DS_DIR
 
 def init_dataset(ds_name, object_name, spatial_size=240, shot=0, preprocess=None):
@@ -13,14 +14,12 @@ def init_dataset(ds_name, object_name, spatial_size=240, shot=0, preprocess=None
         return MVtecADDataset(object_name, data_dir=DS_DIR[0], spatial_size=spatial_size, shot=shot, preprocess=preprocess)
     else: return VisADataset(object_name, data_dir=DS_DIR[1], spatial_size=spatial_size, shot=shot, preprocess=preprocess)
 
-class MVtecADDataset(Dataset):
-    """
-    Dataset class for MVtec AD data set
-    """
+class BaseDataset(Dataset):
+    """Base class for all datasets"""
     def __init__(self, obj_type, data_dir, spatial_size=240, mode="train", shot=0, preprocess=None):
-        super(MVtecADDataset, self).__init__()
+        super(BaseDataset, self).__init__()
         self.shot = shot
-        self.object_type = obj_type if obj_type != "all" else MVTEC_AD_OBJ
+        self.object_type = obj_type
         self.data_dir = data_dir
         self.spatial_size = spatial_size
         self.mode = mode
@@ -39,71 +38,19 @@ class MVtecADDataset(Dataset):
                 max_size=None, antialias=None
             )
             self.preprocess.transforms[1] = transforms.CenterCrop(size=(240, 240))
-        self.init_dataset()
 
     def init_dataset(self):
-        self.img_path = []
-        if isinstance(self.object_type, list):
-            #get all images path of all objects
-            for x in self.object_type:
-                cur_obj = os.path.join(self.data_dir, x)
-                cur_obj = os.path.join(cur_obj, "test")
-                self.img_path.extend(glob.glob(os.path.join(cur_obj, "**", "*.*")))
-            self.img_path = sorted(self.img_path)
-            return
-
-        type_dir = os.path.join(self.data_dir, self.object_type)
-        test_dir = os.path.join(type_dir, "test")
-
-        #get all images paths in test folder
-        self.img_path.extend(glob.glob(os.path.join(test_dir, "**", "*.*")))
+        raise NotImplementedError("Subclasses must implement init_dataset")
 
     def convert_rgb(self, x):
         return x.convert('RGB')
-
+    
     def __getitem__(self, indice):
-        ref_list = []
-        img = None
-        if self.shot != 0:
-            normal_image = []
-            # get shot number of normal images for reference
-            if self.object_type == "all":
-                raise ValueError("Only all for Zero shot")
-
-            train_dir = os.path.join(self.data_dir, self.object_type, "train", "good")
-            normal_image.extend(glob.glob(os.path.join(train_dir, "*.*")))
-            normal_image = np.random.RandomState(10).choice(normal_image, self.shot)
-            for x in normal_image:
-                if self.preprocess is not None:
-                    ref_list.append(self.transform_image(x, self.preprocess))
-                else:
-                    ref_list.append(self.transform_image(x, self.pre_transform))
-
-        if indice >= len(self.img_path):
-            raise ValueError("Invalid indice")
-        image_path = self.img_path[indice]
-        folder_path, image = os.path.split(image_path)
-        isAbno = np.array([1], dtype=np.float32)
-        gt = None
-        img = self.transform_image(image_path, self.preprocess) if self.preprocess is not None else self.transform_image(image_path, self.pre_transform)
-
-        if os.path.basename(folder_path) == "good":
-            isAbno = np.array([0], dtype=np.float32)
-            gt = np.zeros((240, 240), dtype=np.uint8)
-        else:
-            #get groundtruth masks
-            gt_path = image_path.replace("test", "ground_truth")
-            base, ext = os.path.splitext(gt_path)
-            gt_path = base + "_mask" + ext
-            gt = Image.open(gt_path)
-            gt = gt.resize((240,240), Image.BICUBIC)
-            gt = np.array(gt)
-
-        return ref_list, img, isAbno, indice, gt
-
+        raise NotImplementedError("Subclasses must implement __getitem__")
+    
     def __len__(self):
         return len(self.img_path)
-
+    
     def transform_image(self, image, preprocess=None):
         """
         do pretransform for image
@@ -146,34 +93,80 @@ class MVtecADDataset(Dataset):
                     cropped_list.append(image.crop((0, x, smaller, x + smaller)))
 
         return cropped_list
-    
 
-class VisADataset(Dataset):
+class MVtecADDataset(BaseDataset):
+    """
+    Dataset class for MVtec AD data set
+    """
+    def __init__(self, obj_type, data_dir, spatial_size=240, mode="train", shot=0, preprocess=None):
+        super().__init__(obj_type, data_dir, spatial_size, mode, shot, preprocess)
+        self.object_type = obj_type if obj_type != "all" else MVTEC_AD_OBJ
+        self.init_dataset()
+
+    def init_dataset(self):
+        self.img_path = []
+        if isinstance(self.object_type, list):
+            #get all images path of all objects
+            for x in self.object_type:
+                cur_obj = os.path.join(self.data_dir, x)
+                cur_obj = os.path.join(cur_obj, "test")
+                self.img_path.extend(glob.glob(os.path.join(cur_obj, "**", "*.*")))
+            self.img_path = sorted(self.img_path)
+            return
+
+        type_dir = os.path.join(self.data_dir, self.object_type)
+        test_dir = os.path.join(type_dir, "test")
+
+        #get all images paths in test folder
+        self.img_path.extend(glob.glob(os.path.join(test_dir, "**", "*.*")))
+
+    def __getitem__(self, indice):
+        ref_list = []
+        img = None
+        if self.shot != 0:
+            normal_image = []
+            # get shot number of normal images for reference
+            if self.object_type == "all":
+                raise ValueError("Only all for Zero shot")
+
+            train_dir = os.path.join(self.data_dir, self.object_type, "train", "good")
+            normal_image.extend(glob.glob(os.path.join(train_dir, "*.*")))
+            normal_image = np.random.RandomState(10).choice(normal_image, self.shot)
+            for x in normal_image:
+                if self.preprocess is not None:
+                    ref_list.append(self.transform_image(x, self.preprocess))
+                else:
+                    ref_list.append(self.transform_image(x, self.pre_transform))
+
+        if indice >= len(self.img_path):
+            raise ValueError("Invalid indice")
+        image_path = self.img_path[indice]
+        folder_path, image = os.path.split(image_path)
+        isAbno = np.array([1], dtype=np.float32)
+        gt = None
+        img = self.transform_image(image_path, self.preprocess) if self.preprocess is not None else self.transform_image(image_path, self.pre_transform)
+
+        if os.path.basename(folder_path) == "good":
+            isAbno = np.array([0], dtype=np.float32)
+            gt = np.zeros((240, 240), dtype=np.uint8)
+        else:
+            #get groundtruth masks
+            gt_path = image_path.replace("test", "ground_truth")
+            base, ext = os.path.splitext(gt_path)
+            gt_path = base + "_mask" + ext
+            gt = Image.open(gt_path)
+            gt = gt.resize((240,240), Image.BICUBIC)
+            gt = np.array(gt)
+
+        return ref_list, img, isAbno, indice, gt
+
+class VisADataset(BaseDataset):
     """
     Dataset class for VisA data set
     """
     def __init__(self, obj_type, data_dir, spatial_size=240, mode="train", shot=0, preprocess=None):
-        super(VisADataset, self).__init__()
-        self.shot = shot
+        super().__init__(obj_type, data_dir, spatial_size, mode, shot, preprocess)
         self.object_type = obj_type if obj_type != "all" else VISA_OBJ
-        self.data_dir = data_dir
-        self.spatial_size = spatial_size
-        self.mode = mode
-        self.preprocess = preprocess
-        self.pre_transform = transforms.Compose([
-            transforms.Resize(size=240, interpolation=transforms.InterpolationMode.BICUBIC),
-            transforms.CenterCrop(size=(240, 240)),
-            transforms.Lambda(self.convert_rgb),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=MEAN, std=STD)
-            ])
-        if self.preprocess is not None:
-            self.preprocess.transforms[0] = transforms.Resize(
-                size=(240, 240),
-                interpolation=transforms.InterpolationMode.BICUBIC,
-                max_size=None, antialias=None
-            )
-            self.preprocess.transforms[1] = transforms.CenterCrop(size=(240, 240))
         self.init_dataset()
 
     def init_dataset(self):
@@ -204,9 +197,6 @@ class VisADataset(Dataset):
                         self.img_path.append(os.path.join(self.data_dir, row["image"]))
                     else:
                         self.ref_path.append(os.path.join(self.data_dir, row["image"]))
-
-    def convert_rgb(self, x):
-        return x.convert('RGB')
     
     def __getitem__(self, indice):
         ref_list = []
@@ -261,51 +251,60 @@ class VisADataset(Dataset):
         image = self.transform_image(image_path, self.preprocess) if self.preprocess is not None else self.transform_image(image_path, self.pre_transform)
 
         return ref_list, image, image_label, indice, gt
+    
+class UserDataset(BaseDataset):
+    def __init__(self, obj_type, data_dir, spatial_size=240, mode="train", shot=0, preprocess=None, reference_dir=None):
+        super().__init__(obj_type, data_dir, spatial_size, mode, shot, preprocess)
+        self.init_dataset(reference_dir)
 
-    def __len__(self):
-        return len(self.img_path)
-
-    def transform_image(self, image, preprocess=None):
-        """
-        do pretransform for image
-        """
-        image = Image.open(image)
-        processed = preprocess(image)
-        return processed
-        width, height = image.size
-        if height == width:
-            processed = preprocess(image)
-            return processed
+    def init_dataset(self, reference_dir=None):
+        self.img_path = []
+        self.ref_path = []
+        if os.path.isdir(self.data_dir):
+            # expect to get all images inside
+            self.img_path.extend(glob.glob(os.path.join(self.data_dir, "**", "*.png")))
         else:
-            cropped_image = self.crop_image(image)
-            processed = []
-            for i in cropped_image:
-                processed.append(preprocess(i))
-            return processed
+            if self.data_dir.lower().endswith(".png"):
+                self.img_path.append(self.data_dir)
 
-    def crop_image(self, image, stride_ratio=0.8):
-        """
-        image tiling: crop images into list of squared images based on smaller size
-        """
-        width, height = image.size
-        larger = max(height, width)
-        smaller = min(height, width)
-        stride = int(stride_ratio * smaller)
-        cropped_list = []
+        if self.shot != 0:
+            if reference_dir is None:
+                print(f"Insufficient reference image for {self.shot} shots")
+                sys.exit()
+            if os.path.isdir(reference_dir):
+                # expect to get all images inside
+                self.ref_path.extend(glob.glob(os.path.join(reference_dir, "**", "*.png")))
+            else:
+                if reference_dir.lower().endswith(".png"):
+                    self.img_path.append(reference_dir)
 
-        if smaller == height:
-            #slide horizontally
-            for x in range(0, larger, stride):
-                if x + smaller >= larger:
-                    cropped_list.append(image.crop((larger - smaller, 0, larger, smaller)))
+    def __getitem__(self, indice):
+        if indice >= len(self.img_path):
+            raise ValueError("Invalid indice")
+        image_path = self.img_path[indice]
+        folder_path, image = os.path.split(image_path)
+        img = self.transform_image(image_path, self.preprocess) if self.preprocess is not None else self.transform_image(image_path, self.pre_transform)
+
+        ref_list = []
+        if self.shot != 0:
+            if self.shot > len(self.ref_path):
+                raise ValueError(f"Insufficient reference image for {self.shot} shots")
+            
+            for index, image in enumerate(self.ref_path):
+                if index >= self.shot:
+                    break
+                if self.preprocess is not None:
+                    ret = self.transform_image(image, self.preprocess)
+                    if isinstance(ret, list):
+                        ref_list.extend(ret)
+                    else:
+                        ref_list.append(ret)
                 else:
-                    cropped_list.append(image.crop((x, 0, x + smaller, smaller)))
-        else:
-            #slide vertically
-            for x in range(0, larger, stride):
-                if x + smaller >= larger:
-                    cropped_list.append(image.crop((0, larger - smaller, smaller, larger)))
-                else:
-                    cropped_list.append(image.crop((0, x, smaller, x + smaller)))
-
-        return cropped_list
+                    ret = self.transform_image(image, self.pre_transform)
+                    if isinstance(ret, list):
+                        ref_list.extend(ret)
+                    else:
+                        ref_list.append(ret)
+        isAbno = np.array([1], dtype=np.float32)  # dummy value
+        gt = np.zeros((self.spatial_size, self.spatial_size), dtype=np.uint8)  # dummy mask
+        return ref_list, img, isAbno, indice, gt
