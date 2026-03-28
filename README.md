@@ -15,20 +15,20 @@ Unofficial reimplementation of: [CVPR 2023] WinCLIP: Zero-/Few-Shot Anomaly Clas
 
 ## Install Dependencies
 ```bash
-TO BE UPDATED
+pip install -r requirements.txt
 ```
 
 ## Run Evaluation
 To run evaluation, go to repo folder, modify eval.py on ds, param.py for directory, device, etc
 ```bash
-python eval.py <shots> -mode
+python3 eval.py <shots> -mode
 ```
 to run evaluation on <shots>, mode = AC or AS for anomaly classification or segmentation
 
 ## Get Image segmentation result visually
-Modify data directory in param.py, modify directory, shot, object name in segmentation.py to specify where to save result, number of shot, object
+Perform anomaly segmentation on specified image
 ```bash
-python segmentation.py
+python3 segmentation.py
 ```
 get result in ur specified directory
 
